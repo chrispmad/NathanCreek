@@ -1,0 +1,632 @@
+---
+title: "Nathan Creek Analyses"
+author: "Chris Madsen"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r, include = F}
+# Load in libraries
+library(tidyverse)
+library(tidyhydat)
+library(sf)
+
+knitr::opts_chunk$set(echo=F,warning=F,message = F)
+```
+
+```{r download_flow_data}
+# Get daily flow data for Nathan Creek and nearby stations.
+station_names = c('Nathan Creek near Glen Valley','West Creek near Fort Langley',
+  'Salmon river at Seal Kap Farms','Salmon river at 72 Avenue, Langley',
+  'Mclennan Creek near Mount Lehman','Gifford Slough near Matsqui')
+
+station_short_names = c("Nathan","West","Salmon_Kap","Salmon_Langley","McLennan","Gifford")
+
+# station_numbers = lapply(station_names, tidyhydat::search_stn_name) |> 
+#   bind_rows() |> 
+#   dplyr::pull(STATION_NUMBER)
+station_numbers = c("08MH084", "08MH098", "08MH089", "08MH090", "08MH082", "08MH073"
+)
+
+station_info = data.frame(
+  station_names,
+  station_short_names,
+  station_numbers
+)
+
+all_dat = lapply(station_numbers, tidyhydat::hy_daily_flows) |> 
+  bind_rows() |> 
+  filter(!is.na(Value))
+```
+
+```{r get_field_data}
+# Field work data from last year
+fd22_site_info = openxlsx::read.xlsx('data/Nathan Creek fish 2022.xlsx', sheet = 'Site Summary', startRow = 5) |> 
+  as_tibble() |> 
+  mutate(lat = str_extract(Lat_Long, '.* N '),
+         lon = str_remove(Lat_Long, '.* N ')) |> 
+  mutate(lat = str_remove(lat, ' N'),
+         lon = str_remove(lon, ' W')) |> 
+  mutate(lat = str_replace_all(lat, '\\.', ' '),
+         lon = str_replace_all(lon, '\\.', ' ')) |> 
+  mutate(lon = paste0('-',lon))
+
+angle2dec <- function(angle) {
+  angle <- as.character(angle)
+  x <- do.call(rbind, strsplit(angle, split=' '))
+  x <- apply(x, 1L, function(y) {
+    y <- as.numeric(y)
+    y[1] + y[2]/60 + y[3]/3600
+  })
+  return(x)
+}
+
+fd22_site_info = fd22_site_info |> 
+  mutate(lat = angle2dec(lat),
+         lon = angle2dec(lon)) |> 
+  st_as_sf(coords = c('lon','lat'), crs = 4326)
+# 
+# ggplot() + 
+#   geom_sf(data = bcmaps::bc_bound()) + 
+#   geom_sf(data = fd22_site_info)
+
+# library(leaflet)
+# 
+# leaflet() |> 
+#   addTiles() |> 
+#   addCircleMarkers(data = fd22_site_info)
+
+fd22_flow_values = openxlsx::read.xlsx('data/Nathan Creek fish 2022.xlsx', sheet = 'WSC station Flows', startRow = 3) |> 
+  rename(station_id = `Transect.1.(beside.bridge,.in.pool)`) |> 
+  filter(!str_detect(station_id,'Transect')) |> 
+  mutate(station_id = as.numeric(station_id)) |> 
+  as_tibble()
+```
+
+Note! Only two stations have data in both time periods: 08MH090 and 08MH098 (Salmon river at 72 Avenue, Langley and West Creek near Fort Langley, respectively).
+
+```{r make_annual_mad_column}
+all_dat = all_dat |> 
+  mutate(Year = lubridate::year(Date)) |> 
+  group_by(STATION_NUMBER,Year) |> 
+  dplyr::mutate(mad = mean(Value)) |> 
+  ungroup() |> 
+  mutate(percent_mad = Value / mad#,
+         # relative_change_in_mad = (Value - mad)/mad
+         )
+```
+
+```{r calculate_60s_to_90s_ave_and_nathan_creek_ave}
+# Calculate average flow rates for two time periods (1960-1990, and 1990-2020)
+old_ave = all_dat |> 
+  filter(lubridate::year(Date) <= 1990) |> 
+  # Include Nathan Creek in the average
+  filter(STATION_NUMBER %in% c('08MH090','08MH098')) |>
+  mutate(Month = lubridate::month(Date, label = T),
+         Day = lubridate::day(Date)) |> 
+  group_by(Month,Day) |> 
+  summarise(mean_percent_mad_neighbours = mean(percent_mad)) |> 
+  ungroup()
+
+# Nathan Creek flow data
+nathan_data = all_dat |> 
+  filter(STATION_NUMBER == station_numbers[1]) |>
+  filter(lubridate::year(Date) >= 1960) |> 
+  mutate(Month = lubridate::month(Date, label = T),
+         Day = lubridate::day(Date)) |> 
+  group_by(Month,Day) |> 
+  summarise(mean_percent_mad_nathan = mean(percent_mad)) |> 
+  ungroup()
+
+# Join Nathan creek flow data to the average
+old_ave = old_ave |> 
+  left_join(nathan_data)
+
+```
+
+```{r calculate_90_to_2020_ave}
+# Average flow for 1990-2020
+recent_ave = all_dat |> 
+  filter(lubridate::year(Date) > 1990) |> 
+  filter(STATION_NUMBER %in% c('08MH090','08MH098')) |>
+  mutate(Month = lubridate::month(Date, label = T),
+         Day = lubridate::day(Date)) |> 
+  group_by(Month,Day) |> 
+  summarise(mean_percent_mad_neighbours = mean(percent_mad)) |> 
+  ungroup()
+```
+
+Unfortunately, Nathan Creek also has a data gap in its 3 decades of data.
+```{r}
+nathan_gaps = all_dat |>
+  filter(STATION_NUMBER == station_numbers[1]) |>
+  filter(lubridate::year(Date) >= 1960)
+
+nathan_gaps |>
+  ggplot() +
+  geom_histogram(aes(Year))
+
+```
+
+## Flow Plots {.tabset}
+
+### Nathan Creek + Neighbours, 1960-1990
+
+```{r old_flow_plot}
+old_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  ggplot(aes(x = my_date)) + 
+  geom_line(aes(y = mean_percent_mad_neighbours, col = 'Neighbouring Streams')) +
+  geom_line(aes(y = mean_percent_mad_nathan, col = 'Nathan')) +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(limits = c(0,4)) +
+  scale_color_discrete(direction = -1) +
+  labs(y = 'Percent Mean Annual Discharge',
+       x = '') + 
+  labs(col = 'Stream Group') + 
+  theme_minimal() +
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) +
+  theme(legend.position = 'bottom')
+
+# iv. Nathan Creek new data (unknown!)
+```
+
+### Neighbours, 1990 - 2020
+```{r new_flow_plot}
+recent_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  ggplot(aes(x = my_date)) + 
+  geom_line(aes(y = mean_percent_mad_neighbours, col = 'Neighbouring Streams')) +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(limits = c(0,4)) +
+  labs(y = 'Percent Mean Annual Discharge',
+       x = '') + 
+  labs(col = 'Stream Group') + 
+  theme_minimal() +
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) +
+  theme(legend.position = 'bottom')
+```
+
+### West Station, 60-90s vs. 90-20
+```{r}
+old_west = all_dat |> 
+    filter(STATION_NUMBER %in% c('08MH098')) |>
+    filter(lubridate::year(Date) < 1990) |>
+    mutate(Month = lubridate::month(Date, label = T),
+           Day = lubridate::day(Date)) |> 
+    group_by(Month,Day) |> 
+    summarise(mean_percent_mad = mean(percent_mad)) |> 
+    ungroup()
+
+new_west =  all_dat |> 
+    filter(STATION_NUMBER %in% c('08MH098')) |>
+    filter(lubridate::year(Date) >= 1990) |>
+    mutate(Month = lubridate::month(Date, label = T),
+           Day = lubridate::day(Date)) |> 
+    group_by(Month,Day) |> 
+    summarise(new_mean_percent_mad = mean(percent_mad)) |> 
+    ungroup()
+
+west_dat = old_west |> 
+  left_join(new_west) |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day)))
+
+west_dat |> 
+  ggplot(aes(x = my_date)) + 
+  geom_line(aes(y = mean_percent_mad, col = '1960-1990 mean MAD')) +
+  geom_line(aes(y = new_mean_percent_mad, col = '1990-2020 mean MAD')) +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(limits = c(0,4)) +
+  scale_color_discrete(direction = -1) +
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) +  labs(y = '% Mean Annual Discharge',
+       x = '') + 
+  labs(col = 'Time Period') + 
+  theme_minimal() +
+  theme(legend.position = 'bottom')
+```
+
+### Salmon Langley Station, 60-90s vs. 90-20
+```{r}
+old_salmon = all_dat |> 
+    filter(STATION_NUMBER %in% c('08MH090')) |>
+    filter(lubridate::year(Date) < 1990) |>
+    mutate(Month = lubridate::month(Date, label = T),
+           Day = lubridate::day(Date)) |> 
+    group_by(Month,Day) |> 
+    summarise(mean_percent_mad = mean(percent_mad)) |> 
+    ungroup()
+
+new_salmon =  all_dat |> 
+    filter(STATION_NUMBER %in% c('08MH090')) |>
+    filter(lubridate::year(Date) >= 1990) |>
+    mutate(Month = lubridate::month(Date, label = T),
+           Day = lubridate::day(Date)) |> 
+    group_by(Month,Day) |> 
+    summarise(new_mean_percent_mad = mean(percent_mad)) |> 
+    ungroup()
+
+salmon_dat = old_salmon |> 
+  left_join(new_salmon) |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day)))
+
+salmon_dat |> 
+  ggplot(aes(x = my_date)) + 
+  geom_line(aes(y = mean_percent_mad, col = '1960-1990 mean MAD')) +
+  geom_line(aes(y = new_mean_percent_mad, col = '1990-2020 mean MAD')) +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(limits = c(0,4)) +
+  scale_color_discrete(direction = -1) +
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) +  labs(y = '% Mean Annual Discharge',
+       x = '') + 
+  labs(col = 'Time Period') + 
+  theme_minimal() +
+  theme(legend.position = 'bottom')
+```
+
+### Neighbours in 1960-1990 vs. Neighbours in 1990 - 2020
+```{r}
+old_ave |> 
+  rename(old_mean_percent_mad_neighbours = mean_percent_mad_neighbours) |> 
+  left_join(recent_ave |> rename(recent_mean_percent_mad_neighbours = mean_percent_mad_neighbours)) |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  ggplot(aes(x = my_date)) + 
+  geom_line(aes(y = old_mean_percent_mad_neighbours, col = '1960-1990 mean MAD')) +
+  geom_line(aes(y = recent_mean_percent_mad_neighbours, col = '1990-2020 mean MAD')) +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(limits = c(0,4)) +
+  scale_color_discrete(direction = -1) +
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) + 
+  labs(y = '% Mean Annual Discharge',
+       x = '') + 
+  labs(col = 'Time Period') + 
+  theme_minimal() +
+  theme(legend.position = 'bottom')
+```
+
+### Percent Change in Percent MAD from 1960-1990 to 1990-2020 for Neighbour Streams
+```{r}
+change_in_ave = recent_ave |> 
+  left_join(old_ave |> 
+              dplyr::rename(old_mean_percent_mad_neighbours = mean_percent_mad_neighbours)) |> 
+  mutate(percent_change = 100*(mean_percent_mad_neighbours - old_mean_percent_mad_neighbours)/old_mean_percent_mad_neighbours) |> 
+  mutate(nathan_predicted = mean_percent_mad_nathan  + mean_percent_mad_nathan *percent_change/100)
+```
+
+```{r}
+change_in_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  mutate(change_type = ifelse(percent_change > 0, 'Increase','Decrease')) |> 
+  ggplot(aes(x = my_date)) + 
+  geom_ribbon(aes(ymin = 0, ymax = 125), alpha = 0.25, fill = 'lightblue') + 
+  geom_ribbon(aes(ymin = 0, ymax = -50), alpha = 0.25, fill = 'pink') + 
+  geom_point(aes(y = percent_change, col = change_type)) +
+  geom_line(aes(y = percent_change), col = 'black') +
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  # scale_y_continuous(limits = c(0,4)) +
+  labs(y = 'Percent Change in Percent MAD',
+       x = '') + 
+  theme_minimal() +
+  theme(legend.position = 'bottom')
+```
+
+### Predicted Mean MAD for Nathan Creek, 1990 - 2020
+```{r}
+
+# Raw flow record (in m3 ^ s)
+oct_3_2022_single_value = 0.0181 
+  
+# Convert to % mean MAD for Oct 2nd
+oct_3_2022_percent_MAD = oct_3_2022_single_value / change_in_ave |> 
+    dplyr::filter(Month == 'Oct',
+                  Day == 2) |> 
+    pull(nathan_predicted)
+
+change_in_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  # mutate(change_type = ifelse(percent_change > 0, 'Increase','Decrease')) |>
+  ggplot(aes(x = my_date)) + 
+  # geom_point(aes(y = percent_change, col = change_type)) +
+  geom_line(aes(y = nathan_predicted), col = 'black') +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  geom_point(aes(x = lubridate::ymd(paste0('1990-10-03')),
+                 y = oct_3_2022_percent_MAD),
+             col = 'red') +
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) +
+  # scale_y_continuous(limits = c(0,4)) +
+  labs(y = 'Predicted % Mean Annual Discharge',
+       x = '',
+       title = 'Predicted Nathan Creek flow vs. ground-truthed flow data (red dot)',
+       subtitle = 'Nathan Creek mean MAD predicted using % change in mean MAD of neighbouring streams') + 
+  theme_minimal() +
+  theme(legend.position = 'bottom')
+```
+
+```{r predict_nathan_creek_with_lm}
+# See if we can predict Nathan Creek median flow by neighbour's median flow
+
+# We need to get mean MAD for each neighbour separately in different columns.
+# That's so that we can use them in a linear model that looks like this:
+# Nathan_Creek_MAD ~ West_MAD + Salmon_Langley_MAD
+
+stats_data = old_ave |> 
+  dplyr::select(-mean_percent_mad_neighbours) |> 
+  left_join(
+    all_dat |> 
+      rename(station_numbers = STATION_NUMBER) |> 
+      left_join(station_info) |> 
+      filter(lubridate::year(Date) <= 1990) |> 
+      # Only include West and Salmon Langley stations
+      filter(station_numbers %in% c('08MH098','08MH090')) |>
+      mutate(Month = lubridate::month(Date, label = T),
+             Day = lubridate::day(Date)) |> 
+      group_by(Month,Day,station_short_names) |> 
+      summarise(mean_percent_MAD = mean(percent_mad)) |> 
+      ungroup() |> 
+      tidyr::pivot_wider(names_from = station_short_names, values_from = mean_percent_MAD)
+  )
+
+data_for_prediction = all_dat |> 
+  rename(station_numbers = STATION_NUMBER) |> 
+  left_join(station_info) |> 
+  filter(lubridate::year(Date) > 1990) |>
+  mutate(Month = lubridate::month(Date, label = T),
+         Day = lubridate::day(Date)) |> 
+  group_by(Month,Day,station_short_names) |> 
+  summarise(mean_percent_MAD = mean(percent_mad)) |> 
+  ungroup() |> 
+  tidyr::pivot_wider(names_from = station_short_names, values_from = mean_percent_MAD)
+
+# lm_results = lm(nathan_flow ~ West + Salmon_Langley + Salmon_Kap + McLennan + Gifford, data = stats_data)
+
+# stats_data_l = stats_data |> 
+#   pivot_longer(cols = -c(Month,Day)) |> 
+#   mutate(name = replace(name, name == 'nathan_flow', 'Nathan'))
+
+# summary(lm_results)
+
+# # Can run an ANOVA also - I kind of forget the difference, but I think this test groups' relevances?
+# aov_results = aov(nathan_flow ~ West + Salmon_Langley + Salmon_Kap + McLennan + Gifford, data = stats_data)
+# 
+# summary(aov_results)
+
+# Looks like West, Salmon Kap and Gifford are significant.
+# BUT, 1990 - 2020 only has Salmon Langley and West. So, looks like 
+# we're using West!
+
+lm_selective = lm(mean_percent_mad_nathan ~ West + Salmon_Langley, data = stats_data)
+
+```
+
+## Linear Model
+
+Summary of linear model using West and Salmon_Langley to predict Nathan Creek flow.
+
+```{r}
+summary(lm_selective)
+
+# Snap! Only Salmon_Langley is a significant predictor of Nathan Creek mean % MAD... blast. We're down to one station!
+
+# Predict Nathan Creek flow for 1990-2020 using the same linear regression
+data_for_prediction$nathan_flow_preds = predict(lm_selective,
+        data_for_prediction
+        )
+
+data_for_prediction = data_for_prediction |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day)))
+
+# Compare the predicted Nathan Creek flows that we predicted with a linear model to those flows predicted by looking at percent change in nearby stations from 1960-1990 to 1990-2020.
+
+```
+
+```{r time_series}
+# # Since this is a time series, we probably can't just do a typical linear model... rather ,we can use the fpp3 package to do a time series linear model.
+# 
+# salmon_langley_dat = all_dat |> 
+#   dplyr::filter(STATION_NUMBER == '08MH090') |> 
+#   dplyr::select(STATION_NUMBER, Date, Year, percent_mad) #|> 
+#   # mutate(Month = lubridate::month(Date)) |> 
+#   # mutate(date = make_yearmonth(Year,Month)) |> 
+#   # dplyr::select(-c(Date,Year,Month)) |> 
+#   # as_tsibble(percent_mad,
+#   #            index = Date)
+# 
+# salmon_langley_dat |> 
+#   group_by(Year) |> 
+#   summarise(recs_per_year = n()) |> 
+#   filter(recs_per_year < 365)
+#   
+# as.ts(salmon_langley)
+# 
+# salmon_langley_ts = ts(data = salmon_langley_ts$percent_mad, start=c(1960,1,20), frequency=365)
+# # autoplot(salmon_langley_ts, percent_mad)
+# 
+# stats_data |>
+#   mutate(Month = as.numeric(Month),
+#          Day = as.numeric(Day)) |>
+#   mutate(date = yearmonth(unite(Month,Day))) |>
+#   as_tsibble(index = date)
+# lin_reg <- model(trends_ts, TSLM(headache ~ ibuprofen))
+```
+
+## Comparison of Prediction Methods for Nathan Creek
+```{r}
+# PLOT
+change_in_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  # mutate(change_type = ifelse(percent_change > 0, 'Increase','Decrease')) |>
+  ggplot(aes(x = my_date)) + 
+  # geom_point(aes(y = percent_change, col = change_type)) +
+  geom_line(aes(y = nathan_predicted, col = '% Change Predictions')) +
+  geom_line(aes(x = my_date, y = nathan_flow_preds, col = 'Linear Model Predictions'), data = data_for_prediction) + 
+    geom_point(aes(x = lubridate::ymd(paste0('1990-10-03')),
+                 y = oct_3_2022_percent_MAD),
+             col = 'red') +
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  # scale_y_continuous(limits = c(0,4)) +
+  labs(y = 'Predicted Flow (m^3/s)',
+       x = '',
+       title = '1990 - 2020 Predicted Median Flow for Nathan Creek',
+       subtitle = 'Using two methods: \n1. Percent Change in neighbour streams between 1960-1990\n2. Linear model of Nathan Creek flow explained by neighbour stream flow',
+       caption = 'ground-truthed flow on Oct 3 2022',
+       fill = 'Method') + 
+  theme_minimal() +
+  theme(legend.position = 'bottom')
+
+```
+
+## Location of neighbouring stations
+
+```{r}
+# Find station coordinates
+stat_p = hy_stations(station_numbers) |> 
+  st_as_sf(coords = c("LONGITUDE","LATITUDE"),
+           crs = 4326)
+
+all_ecos = bcmaps::ecosections() |> 
+  sf::st_transform(crs = 4326)
+
+nathan_creek_ecos = all_ecos |> 
+  dplyr::filter(sf::st_intersects(geometry, sf::st_union(stat_p), sparse = F))
+
+mypal = leaflet::colorFactor(
+  palette = 'RdYlGn',
+  domain = c(F,T)
+)
+
+leaf_dat = stat_p |> 
+  rename(station_numbers = STATION_NUMBER) |> 
+  left_join(station_info) |> 
+  mutate(usable = ifelse(station_short_names %in% c("Salmon_Langley","West"),T,F))
+  
+nathan_creek = bcdata::bcdc_query_geodata('freshwater-atlas-stream-network') |> 
+  filter(GNIS_NAME == 'Nathan Creek') |> 
+  collect() |> 
+  sf::st_transform(crs = 4326)
+
+nathan_creek = nathan_creek |> 
+  group_by(BLUE_LINE_KEY) |> 
+  dplyr::summarise()
+
+library(leaflet)
+
+leaf_dat |> 
+  leaflet() %>%
+  addTiles() |> 
+  addPolygons(
+    data = nathan_creek_ecos,
+    color = 'purple',
+    fillColor = 'purple',
+    fillOpacity = 0.1
+  ) |> 
+  addPolylines(
+    data = nathan_creek[1,],
+    label = 'Nathan Creek'
+  ) |>
+  addCircleMarkers(
+    color = ~mypal(usable),
+    opacity = 0.95,
+    fillOpacity = 0.95,
+    label = ~station_short_names
+  ) |> 
+  addLegend(
+    pal = mypal,
+    values = leaf_dat$usable,
+    title = 'Data in both time periods'
+  )
+```
+
+```{r}
+## Spatial Analyses {.tabset}
+
+### Station Locations
+# nathan_station = tidyhydat::hy_stations(station_number = station_numbers[1]) |> st_as_sf(coords = c("LONGITUDE","LATITUDE"), crs = 4326)
+# 
+# # merritt = tibble(
+# #   lat = 50.11036330530752, 
+# #   lon = -120.78570288394391
+# # ) |> 
+# #   st_as_sf(coords = c('lon','lat'), crs = 4326)
+# # 
+# # nicola_stations = hy_stations() |> 
+# #   filter(str_detect(STATION_NAME, 'NICOLA')) |> 
+# #   st_as_sf(coords = c("LONGITUDE","LATITUDE"), crs = 4326)
+# # 
+# # nicola_stations$dist_to_merritt = as.numeric(st_distance(nicola_stations, merritt))
+# # 
+# # nicola_stations |> 
+# #   arrange(dist_to_merritt) |> View()
+# 
+# merritt_station = hy_stations('08LG007') |> 
+#   st_as_sf(coords = c("LONGITUDE","LATITUDE"), crs = 4326)
+# 
+# all_ecoregions = bcmaps::ecoregions()
+# 
+# all_ecoregions = all_ecoregions |> 
+#   st_transform(crs = 4326) |> 
+#   st_join(nathan_station |> 
+#             dplyr::select(STATION_NAME), st_intersects)
+# 
+# nathan_ecoregion = all_ecoregions |> 
+#   filter(!is.na(STATION_NAME))
+# 
+# merritt_ecoregion =  all_ecoregions |> 
+#   dplyr::select(-STATION_NAME) |> 
+#   st_join(merritt_station |> 
+#             dplyr::select(STATION_NAME), st_intersects) |> 
+#   filter(!is.na(STATION_NAME))
+# 
+# ecoregions = nathan_ecoregion |> 
+#   bind_rows(merritt_ecoregion)
+# 
+# stations = nathan_station |> 
+#   bind_rows(merritt_station)
+# 
+# ggplot() + 
+#   geom_sf(data = ecoregions, aes(fill = str_to_title(ECOREGION_NAME))) + 
+#   geom_sf(data = stations) + 
+#   geom_sf_label_repel(data = stations, aes(label = str_to_title(STATION_NAME))) +
+#   # ggthemes::theme_map() + 
+#   labs(fill = 'Ecoregion Name')
+```
+
+```{r}
+### 1960 - 1990 Flow Comparison
+
+# merritt_dat = tidyhydat::hy_daily_flows(station_number = '08LG007') |> 
+#   filter(lubridate::year(Date) <= 1990, lubridate::year(Date) >= 1960) |> 
+#   mutate(Month = lubridate::month(Date, label = T),
+#          Day = lubridate::day(Date)) |> 
+#   group_by(Month,Day) |> 
+#   summarise(merritt_flow = median(Value)) |> 
+#   ungroup()
+# 
+# ecoreg_comp_dat = merritt_dat |> 
+#   left_join(nathan_data) |> 
+#   mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day)))
+# 
+# ggplot() + 
+#   geom_line(aes(y = merritt_flow, x = my_date, col = 'Merritt median flow'),
+#             data = ecoreg_comp_dat) +
+#   geom_line(aes(y = nathan_flow, x = my_date, col = 'Nathan median flow'),
+#             data = ecoreg_comp_dat)  +
+#   scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+#   labs(y = 'Median Flow (m^3/s)',
+#        x = '') + 
+#   labs(col = 'Stream Group') + 
+#   theme_minimal() +
+#   theme(legend.position = 'bottom')
+```
+
+
