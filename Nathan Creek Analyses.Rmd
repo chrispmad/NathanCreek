@@ -150,6 +150,28 @@ nathan_gaps |>
 
 ## Flow Plots {.tabset}
 
+### Nathan Creek, 1960-1990
+
+```{r old_flow_plot_just_nathan}
+old_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  ggplot(aes(x = my_date)) + 
+  geom_line(aes(y = mean_percent_mad_nathan, col = 'Nathan')) +
+  geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
+  scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
+  scale_y_continuous(limits = c(0,4)) +
+  scale_color_discrete(direction = -1) +
+  labs(y = '% Mean Annual Discharge',
+       x = '') + 
+  labs(col = 'Stream Group') + 
+  theme_minimal() +
+  scale_y_continuous(labels = scales::label_percent(),
+                     breaks = c(0,1,2,4,6)) +
+  theme(legend.position = 'bottom')
+
+# iv. Nathan Creek new data (unknown!)
+```
+
 ### Nathan Creek + Neighbours, 1960-1990
 
 ```{r old_flow_plot}
@@ -162,7 +184,7 @@ old_ave |>
   scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
   scale_y_continuous(limits = c(0,4)) +
   scale_color_discrete(direction = -1) +
-  labs(y = 'Percent Mean Annual Discharge',
+  labs(y = '% Mean Annual Discharge',
        x = '') + 
   labs(col = 'Stream Group') + 
   theme_minimal() +
@@ -182,7 +204,7 @@ recent_ave |>
   geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
   scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
   scale_y_continuous(limits = c(0,4)) +
-  labs(y = 'Percent Mean Annual Discharge',
+  labs(y = '% Mean Annual Discharge',
        x = '') + 
   labs(col = 'Stream Group') + 
   theme_minimal() +
@@ -336,7 +358,8 @@ change_in_ave |>
   # mutate(change_type = ifelse(percent_change > 0, 'Increase','Decrease')) |>
   ggplot(aes(x = my_date)) + 
   # geom_point(aes(y = percent_change, col = change_type)) +
-  geom_line(aes(y = nathan_predicted), col = 'black') +
+  geom_line(aes(y = mean_percent_mad_nathan, col = 'Nathan (1960-1990)'), lwd = 1) +
+  geom_line(aes(y = nathan_predicted, col = 'Nathan, Predicted (1990-2020)'), lwd = 1) +
   geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
   geom_point(aes(x = lubridate::ymd(paste0('1990-10-03')),
                  y = oct_3_2022_percent_MAD),
@@ -347,8 +370,9 @@ change_in_ave |>
   # scale_y_continuous(limits = c(0,4)) +
   labs(y = 'Predicted % Mean Annual Discharge',
        x = '',
-       title = 'Predicted Nathan Creek flow vs. ground-truthed flow data (red dot)',
-       subtitle = 'Nathan Creek mean MAD predicted using % change in mean MAD of neighbouring streams') + 
+       title = 'Predicted, Historical Nathan Creek flow and ground-truthed flow data (red dot)',
+       subtitle = 'Nathan Creek mean MAD predicted using % change in mean MAD of neighbouring streams',
+       color = 'Time Period') + 
   theme_minimal() +
   theme(legend.position = 'bottom')
 ```
@@ -475,7 +499,7 @@ change_in_ave |>
              col = 'red') +
   scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
   # scale_y_continuous(limits = c(0,4)) +
-  labs(y = 'Predicted Flow (m^3/s)',
+  labs(y = 'Predicted % Mean Annual Discharge',
        x = '',
        title = '1990 - 2020 Predicted Median Flow for Nathan Creek',
        subtitle = 'Using two methods: \n1. Percent Change in neighbour streams between 1960-1990\n2. Linear model of Nathan Creek flow explained by neighbour stream flow',
