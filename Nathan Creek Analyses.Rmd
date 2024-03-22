@@ -118,6 +118,13 @@ nathan_data = all_dat |>
   summarise(mean_percent_mad_nathan = mean(percent_mad)) |> 
   ungroup()
 
+# Just find MAD for Nathan's creek for this older time series
+nathan_MAD = all_dat |> 
+  filter(STATION_NUMBER == station_numbers[1]) |>
+  filter(lubridate::year(Date) >= 1960) |> 
+  dplyr::summarise(Nathan_MAD = mean(Value)) |> 
+  dplyr::pull(Nathan_MAD)
+
 # Join Nathan creek flow data to the average
 old_ave = old_ave |> 
   left_join(nathan_data)
@@ -344,14 +351,24 @@ change_in_ave |>
 ### Predicted Mean MAD for Nathan Creek, 1990 - 2020
 ```{r}
 
-# Raw flow record (in m3 ^ s)
-oct_3_2022_single_value = 0.0181 
-  
-# Convert to % mean MAD for Oct 2nd
-oct_3_2022_percent_MAD = oct_3_2022_single_value / change_in_ave |> 
-    dplyr::filter(Month == 'Oct',
-                  Day == 2) |> 
-    pull(nathan_predicted)
+# # Raw flow record (in m3 ^ s)
+# oct_3_2022_single_value = 0.0181 
+#   
+# # Convert to % mean MAD for Oct 2nd
+# oct_3_2022_percent_MAD = oct_3_2022_single_value / change_in_ave |> 
+#     dplyr::filter(Month == 'Oct',
+#                   Day == 2) |> 
+#     pull(nathan_predicted)
+
+# Note that these were actually measured in 2023.
+ground_truthed_points = data.frame(
+  date_measured = c('1990-07-19','1990-07-20','1990-07-20',
+                    '1990-07-20','1990-07-21'),
+  site_number = c("23","44","70","88.2","98"),
+  discharge_L_s = c(73.34,51.64,14.21,58.92,6.18)
+) |> 
+  dplyr::mutate(discharge_as_perc_MAD = discharge_L_s/(1000*nathan_MAD)) |> 
+  dplyr::mutate(my_date = lubridate::ymd(date_measured))
 
 change_in_ave |> 
   mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
@@ -361,8 +378,9 @@ change_in_ave |>
   geom_line(aes(y = mean_percent_mad_nathan, col = 'Nathan (1960-1990)'), lwd = 1) +
   geom_line(aes(y = nathan_predicted, col = 'Nathan, Predicted (1990-2020)'), lwd = 1) +
   geom_line(aes(y = 1), lty = 2, col = 'darkgrey') + 
-  geom_point(aes(x = lubridate::ymd(paste0('1990-10-03')),
-                 y = oct_3_2022_percent_MAD),
+  geom_point(data = ground_truthed_points,
+             aes(x = my_date,
+                 y = discharge_as_perc_MAD),
              col = 'red') +
   scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
   scale_y_continuous(labels = scales::label_percent(),
@@ -370,12 +388,39 @@ change_in_ave |>
   # scale_y_continuous(limits = c(0,4)) +
   labs(y = 'Predicted % Mean Annual Discharge',
        x = '',
-       title = 'Predicted, Historical Nathan Creek flow and ground-truthed flow data (red dot)',
+       title = 'Predicted, Historical Nathan Creek flow and 2023 ground-truthed flow data (red dots)',
        subtitle = 'Nathan Creek mean MAD predicted using % change in mean MAD of neighbouring streams',
        color = 'Time Period') + 
   theme_minimal() +
   theme(legend.position = 'bottom')
 ```
+
+Ground-truthed points (red) that were taken in 2023 are noticeably lower than the predicted percent Mean Annual Discharge. 
+
+```{r}
+knitr::kable(
+  ground_truthed_points |> 
+    dplyr::mutate(date_measured = str_replace(date_measured,'1990','2023')) |> 
+    dplyr::select(-my_date)
+)
+```
+
+
+### Predicted Discharge in Litres per second for Nathan Creek
+```{r}
+
+new_Nathan_Creek_MAD = change_in_ave |> 
+  mutate(my_date = lubridate::ymd(paste0('1990-',Month,'-',Day))) |> 
+  dplyr::mutate(nathan_pred_L_s = nathan_predicted*nathan_MAD*1000) |>
+  dplyr::select(my_date, nathan_pred_L_s) |> 
+  dplyr::summarise(new_nathan_MAD = mean(nathan_pred_L_s)) |> 
+  dplyr::pull(new_nathan_MAD)
+
+```
+
+Water Survey Canada data for Nathan Creek spans 1960 - 1990 (with some gaps), and the mean annual discharge (MAD) according to those data was `r round(nathan_MAD*1000,0)` Litres/second.
+
+The predicted 1990-2020 MAD for Nathan Creek, estimated using the percent change of two of its neighbouring streams, is `r round(new_Nathan_Creek_MAD,0)` Litres/second.
 
 ```{r predict_nathan_creek_with_lm}
 # See if we can predict Nathan Creek median flow by neighbour's median flow
@@ -494,9 +539,9 @@ change_in_ave |>
   # geom_point(aes(y = percent_change, col = change_type)) +
   geom_line(aes(y = nathan_predicted, col = '% Change Predictions')) +
   geom_line(aes(x = my_date, y = nathan_flow_preds, col = 'Linear Model Predictions'), data = data_for_prediction) + 
-    geom_point(aes(x = lubridate::ymd(paste0('1990-10-03')),
-                 y = oct_3_2022_percent_MAD),
-             col = 'red') +
+    # geom_point(aes(x = lubridate::ymd(paste0('1990-10-03')),
+    #              y = oct_3_2022_percent_MAD),
+    #          col = 'red') +
   scale_x_date(date_labels = '%b',date_breaks = "1 month") + 
   # scale_y_continuous(limits = c(0,4)) +
   labs(y = 'Predicted % Mean Annual Discharge',
